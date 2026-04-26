@@ -3,9 +3,11 @@ package main
 import (
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
@@ -48,6 +50,18 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 	}
 	defer file.Close()
 
+	mediatype, _, err := mime.ParseMediaType(fileHeader.Header.Get("Content-Type"))
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "some error", err)
+		return
+	}
+
+	allowedTypes := []string{"image/jpeg", "image/png"}
+	if !slices.Contains(allowedTypes, mediatype) {
+		respondWithError(w, http.StatusBadRequest, "Wrong type of media", nil)
+		return
+	}
+
 	thumbnailVideo, err := cfg.db.GetVideo(videoID)
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, "Invalid video id", err)
@@ -57,14 +71,7 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		respondWithError(w, http.StatusUnauthorized, "User is not authorized", err)
 		return
 	}
-
-	contentType := fileHeader.Header.Get("Content-Type")
-	parts := strings.Split(contentType, "/")
-	if len(parts) != 2 {
-		respondWithError(w, http.StatusBadRequest, "invalid contentType", nil)
-		return
-	}
-	fileExtention := parts[1]
+	fileExtention := strings.Split(mediatype, "/")[1]
 
 	fileName := fmt.Sprintf("%s.%s", videoID.String(), fileExtention)
 	thumbnailPath := filepath.Join(cfg.assetsRoot, fileName)
@@ -89,6 +96,7 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 	err = cfg.db.UpdateVideo(thumbnailVideo)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Erro a atualizar o video", err)
+		return
 	}
 
 	respondWithJSON(w, http.StatusOK, thumbnailVideo)
