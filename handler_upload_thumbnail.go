@@ -1,10 +1,12 @@
 package main
 
 import (
-	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
@@ -32,7 +34,6 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 
 	fmt.Println("uploading thumbnail for video", videoID, "by user", userID)
 
-	// TODO: implement the upload here
 	const maxMemory = 10 << 20
 	err = r.ParseMultipartForm(maxMemory)
 	if err != nil {
@@ -40,38 +41,55 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	file, _, err := r.FormFile("thumbnail")
+	file, fileHeader, err := r.FormFile("thumbnail")
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't get the thumbnail", err)
 		return
 	}
 	defer file.Close()
 
-	imageData, err := io.ReadAll(file)
-	if err != nil {
-		respondWithError(w, http.StatusBadRequest, "Invalid Image", err)
-		return
-	}
-
-	metaData, err := cfg.db.GetVideo(videoID)
+	thumbnailVideo, err := cfg.db.GetVideo(videoID)
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, "Invalid video id", err)
 		return
 	}
-	if metaData.UserID != userID {
+	if thumbnailVideo.UserID != userID {
 		respondWithError(w, http.StatusUnauthorized, "User is not authorized", err)
 		return
 	}
 
-	imageData64 := base64.StdEncoding.EncodeToString(imageData)
-	dataURL := fmt.Sprintf("data:text/plain;base64,%s", imageData64)
+	contentType := fileHeader.Header.Get("Content-Type")
+	parts := strings.Split(contentType, "/")
+	if len(parts) != 2 {
+		respondWithError(w, http.StatusBadRequest, "invalid contentType", nil)
+		return
+	}
+	fileExtention := parts[1]
 
-	metaData.ThumbnailURL = &dataURL
+	fileName := fmt.Sprintf("%s.%s", videoID.String(), fileExtention)
+	thumbnailPath := filepath.Join(cfg.assetsRoot, fileName)
 
-	err = cfg.db.UpdateVideo(metaData)
+	osFile, err := os.Create(thumbnailPath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "couldn't create file", err)
+		return
+	}
+
+	defer osFile.Close()
+
+	_, err = io.Copy(osFile, file)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "couldn't save file", err)
+		return
+	}
+
+	dataURL := fmt.Sprintf("http://localhost:8091/assets/%s", fileName)
+	thumbnailVideo.ThumbnailURL = &dataURL
+
+	err = cfg.db.UpdateVideo(thumbnailVideo)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Erro a atualizar o video", err)
 	}
 
-	respondWithJSON(w, http.StatusOK, metaData)
+	respondWithJSON(w, http.StatusOK, thumbnailVideo)
 }
