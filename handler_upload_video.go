@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"io"
 	"mime"
 	"net/http"
 	"os"
+	"os/exec"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -83,9 +86,24 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 
 	tmpFile.Seek(0, io.SeekStart)
 
+	tmpFileAspectRatio, err := getVideoAspectRation(tmpFile.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't get the aspect ratio from video %v", err)
+		return
+	}
+	var prefix string
+	switch tmpFileAspectRatio {
+	case "16:9":
+		prefix = "landscape"
+	case "9:16":
+		prefix = "portrait"
+	case "other":
+		prefix = "other"
+	}
+
 	cryptoName := make([]byte, 32)
 	rand.Read(cryptoName)
-	videoName := fmt.Sprintf("%x.mp4", cryptoName)
+	videoName := fmt.Sprintf("%s/%x.mp4", prefix, cryptoName)
 
 	_, err = cfg.s3Client.PutObject(r.Context(), &s3.PutObjectInput{
 		Bucket:      aws.String(cfg.s3Bucket),
@@ -108,4 +126,40 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	}
 
 	respondWithJSON(w, http.StatusOK, videoMetaData)
+}
+
+type Stream struct {
+	Width  int `json:"width"`
+	Height int `json:"height"`
+}
+
+type FFProbeOutput struct {
+	Streams []Stream `json:"Streams"`
+}
+
+func getVideoAspectRation(filePath string) (string, error) {
+	cmd := exec.Command("ffprobe", "-v", "error", "-print_format", "json", "-show_streams", filePath)
+	var videoInfo bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &videoInfo
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("ffprobe error: %v, stderr: %s", err, stderr.String())
+	}
+
+	var output FFProbeOutput
+	if err := json.Unmarshal(videoInfo.Bytes(), &output); err != nil {
+		return "", err
+	}
+
+	ratio := float64(output.Streams[0].Width) / float64(output.Streams[0].Height)
+	switch {
+	case ratio >= 1.7 && ratio <= 1.8:
+		return "16:9", nil
+	case ratio >= 0.5 && ratio <= 0.6:
+		return "9:16", nil
+	default:
+		return "other", nil
+	}
 }
