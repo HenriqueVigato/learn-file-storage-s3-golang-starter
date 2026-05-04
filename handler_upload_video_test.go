@@ -1,6 +1,8 @@
 package main
 
-import "testing"
+import (
+	"testing"
+)
 
 func TestGetVidoAspectRation(t *testing.T) {
 	aspectRatin, err := getVideoAspectRation("./samples/boots-video-horizontal.mp4")

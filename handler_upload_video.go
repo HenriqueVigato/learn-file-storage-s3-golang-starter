@@ -100,6 +100,19 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	case "other":
 		prefix = "other"
 	}
+	converted, err := processVideoForFastStart(tmpFile.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't get the process ratio from video %v", err)
+		return
+	}
+	os.Remove(tmpFile.Name())
+
+	processedFile, err := os.Open(converted)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "couldn't open processed file", err)
+		return
+	}
+	defer processedFile.Close()
 
 	cryptoName := make([]byte, 32)
 	rand.Read(cryptoName)
@@ -108,7 +121,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	_, err = cfg.s3Client.PutObject(r.Context(), &s3.PutObjectInput{
 		Bucket:      aws.String(cfg.s3Bucket),
 		Key:         aws.String(videoName),
-		Body:        tmpFile,
+		Body:        processedFile,
 		ContentType: aws.String("video/mp4"),
 	})
 	if err != nil {
@@ -134,7 +147,7 @@ type Stream struct {
 }
 
 type FFProbeOutput struct {
-	Streams []Stream `json:"Streams"`
+	Streams []Stream `json:"streams"`
 }
 
 func getVideoAspectRation(filePath string) (string, error) {
@@ -162,4 +175,19 @@ func getVideoAspectRation(filePath string) (string, error) {
 	default:
 		return "other", nil
 	}
+}
+
+func processVideoForFastStart(filePath string) (string, error) {
+	output := filePath + ".processing"
+	cmd := exec.Command("ffmpeg", "-i", filePath, "-c", "copy", "-movflags", "faststart", "-f", "mp4", output)
+
+	var videoInfo bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &videoInfo
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("ffprobe error: %v\n stderr: %s", err, stderr.String())
+	}
+
+	return output, nil
 }
